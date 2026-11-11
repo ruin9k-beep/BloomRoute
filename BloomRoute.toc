@@ -1,0 +1,9 @@
+## Interface: 11200
+## Title: BloomRoute
+## Notes: Farming loops for alchemy herbs and mining veins on the world map and minimap, with a next-stop tracker, node picker and minimap button.
+## Author: ruin9k
+## Version: 3.3.0
+## SavedVariables: BloomRouteDB
+
+BloomRoute_Data.lua
+BloomRoute.lua
