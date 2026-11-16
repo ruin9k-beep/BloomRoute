@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: BloomRoute
+## Notes: Learns every herb and mining vein you gather and turns them into farming loops on the world map and minimap, with a next-stop tracker.
+## Author: ruin9k
+## Version: 3.5.0
+## SavedVariables: BloomRouteDB
+## IconTexture: Interface\Icons\INV_Misc_Flower_02
+## AddonCompartmentFunc: BloomRoute_OnAddonCompartmentClick
+
+# WoW Forever. The 1.12 client loads BloomRoute.toc instead.
+Forever\BloomRoute.lua

@@ -1,4 +1,4 @@
--- BloomRoute 3.3.0 by ruin9k
+-- BloomRoute 3.5.0 (Turtle/Octo WoW 1.12 build) by ruin9k
 -- Farming loops for alchemy herbs and mining veins: pick any mix of herbs and ores,
 -- follow the loop on the world map and minimap, and skip nodes you checked until
 -- they respawn.
@@ -30,6 +30,7 @@ local DEFAULTS = {
 		target = { 0.3, 0.9, 0.55 },  -- the next stop
 	},
 	ringsByType = true,  -- with several herbs/ores picked, color each type's rings differently
+	variants = {},       -- [variant code] = false to leave that vein variant out of loops (R, O)
 	tracker = true,      -- main window shown
 	radius = 25,         -- yards: reaching this close to a stop counts as checking it
 	dotSpacing = 9,      -- map pixels between route dots
@@ -323,8 +324,8 @@ local function BaseRoute(zone)
 		local h = herbs[1]
 		local z = h.zones[zone]
 		local stops, skipped = {}, {}
-		for i = 1, table.getn(z.stops) do stops[i] = { z.stops[i][1], z.stops[i][2], h.name } end
-		for i = 1, table.getn(z.skipped) do skipped[i] = { z.skipped[i][1], z.skipped[i][2], h.name } end
+		for i = 1, table.getn(z.stops) do stops[i] = { z.stops[i][1], z.stops[i][2], h.name, z.stops[i][3] } end
+		for i = 1, table.getn(z.skipped) do skipped[i] = { z.skipped[i][1], z.skipped[i][2], h.name, z.skipped[i][3] } end
 		routeCache[cacheKey] = MakeRoute(z, key, stops, skipped, { h.name })
 		return routeCache[cacheKey]
 	end
@@ -339,8 +340,8 @@ local function BaseRoute(zone)
 			names[i] = h.name
 			local z = h.zones[zone]
 			if z then
-				for k = 1, table.getn(z.stops) do table.insert(pts, { z.stops[k][1], z.stops[k][2], h.name }) end
-				for k = 1, table.getn(z.skipped) do table.insert(pts, { z.skipped[k][1], z.skipped[k][2], h.name }) end
+				for k = 1, table.getn(z.stops) do table.insert(pts, { z.stops[k][1], z.stops[k][2], h.name, z.stops[k][3] }) end
+				for k = 1, table.getn(z.skipped) do table.insert(pts, { z.skipped[k][1], z.skipped[k][2], h.name, z.skipped[k][3] }) end
 			end
 			local l = Learned(h.name, zone)
 			if l then
@@ -359,28 +360,64 @@ local function BaseRoute(zone)
 	return nil
 end
 
--- Returns the route for a zone with ignored nodes taken out (the remaining stops keep their
--- order), or nil (nothing picked grows there, or the loop is still being built)
+-- Special vein variants that can be left out of loops (Options > Node Types)
+local VARIANTS = {
+	{ code = "R", label = "Rich veins", tip = "Rich Thorium Veins. Spots where a normal vein can also spawn stay on the loop." },
+	{ code = "O", label = "Ooze-covered veins", tip = "Ooze-covered Silver, Gold, Mithril, Truesilver and Thorium veins. Spots where a normal vein can also spawn stay on the loop." },
+}
+
+-- A spot stays on the loop if any variant that can spawn there is turned on.
+-- s[4] lists the variants (N = normal, R = rich, O = ooze covered); none means normal only.
+local function VariantAllowed(s)
+	local tags = s[4]
+	if not tags or tags == "" or string.find(tags, "N", 1, true) then return true end
+	for i = 1, string.len(tags) do
+		if db.variants[string.sub(tags, i, i)] ~= false then return true end
+	end
+	return false
+end
+
+-- Returns the route for a zone with ignored nodes and turned-off vein variants taken out (the
+-- remaining stops keep their order), or nil (nothing picked grows there, or the loop is still
+-- being built)
 local function Route(zone)
 	local base = BaseRoute(zone)
 	if not base then return nil end
 	local fc = base.filtered
 	if fc and fc.ver == ignoreVersion then return fc.route end
-	local stops, ignored = {}, {}
+	local stops, ignored, removed = {}, {}, 0
 	for i = 1, table.getn(base.stops) do
 		local s = base.stops[i]
-		if db.ignored[IgnoreKey(zone, s)] then table.insert(ignored, s) else table.insert(stops, s) end
+		if not VariantAllowed(s) then
+			removed = removed + 1
+		elseif db.ignored[IgnoreKey(zone, s)] then
+			table.insert(ignored, s)
+		else
+			table.insert(stops, s)
+		end
+	end
+	local skipped = {}
+	for i = 1, table.getn(base.skipped) do
+		if VariantAllowed(base.skipped[i]) then table.insert(skipped, base.skipped[i]) end
 	end
 	local route = base
-	if table.getn(ignored) > 0 then
+	if table.getn(ignored) > 0 or removed > 0 or table.getn(skipped) < table.getn(base.skipped) then
 		route = {}
 		for k, v in pairs(base) do route[k] = v end
 		route.filtered = nil
 		route.stops = stops
+		route.skipped = skipped
 	end
 	route.ignoredStops = ignored
 	base.filtered = { ver = ignoreVersion, route = route }
 	return route
+end
+
+function BR:SetVariant(code, on)
+	if on then db.variants[code] = nil else db.variants[code] = false end
+	ignoreVersion = ignoreVersion + 1
+	self:DrawMap()
+	self:UpdateTrackerText()
 end
 
 local function Building(zone)
@@ -1501,7 +1538,43 @@ local function CreateOptions()
 	end
 
 	-- tab buttons sit on top of the panel
-	local TABS = { { id = "general", label = "General" }, { id = "visuals", label = "Visuals" } }
+	-- Node Types tab: turn special vein variants on or off
+	local nt = CreateFrame("Frame", nil, f)
+	nt:SetAllPoints(f)
+	nt:Hide()
+	local ntHead = nt:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	ntHead:SetPoint("TOPLEFT", nt, "TOPLEFT", 14, -30)
+	ntHead:SetText("Include in loops")
+	nt.checks = {}
+	for i = 1, table.getn(VARIANTS) do
+		local var = VARIANTS[i]
+		local c = CreateFrame("CheckButton", "BloomRouteOptionsVariant" .. i, nt, "UICheckButtonTemplate")
+		c:SetWidth(24); c:SetHeight(24)
+		c:SetPoint("TOPLEFT", nt, "TOPLEFT", 14, -48 - (i - 1) * 24)
+		getglobal(c:GetName() .. "Text"):SetText(var.label)
+		c.code, c.tip = var.code, var.tip
+		c:SetScript("OnClick", function() BR:SetVariant(this.code, this:GetChecked() and true or false) end)
+		c:SetScript("OnEnter", function()
+			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+			GameTooltip:SetText(this.tip, 1, 1, 1, 1, 1)
+			GameTooltip:Show()
+		end)
+		c:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		nt.checks[i] = c
+	end
+	local ntHint = nt:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	ntHint:SetPoint("TOPLEFT", nt, "TOPLEFT", 16, -56 - table.getn(VARIANTS) * 24)
+	ntHint:SetWidth(298)
+	ntHint:SetJustifyH("LEFT")
+	ntHint:SetText("Unticked variants are left out of every loop. A spot where a normal vein can also spawn stays on the loop.")
+	nt.Refresh = function()
+		for i = 1, table.getn(nt.checks) do
+			nt.checks[i]:SetChecked(db.variants[nt.checks[i].code] ~= false)
+		end
+	end
+
+	local TABS = { { id = "general", label = "General" }, { id = "visuals", label = "Visuals" },
+		{ id = "types", label = "Node Types" } }
 	f.tabs = {}
 	for i = 1, table.getn(TABS) do
 		local tab = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
@@ -1523,11 +1596,19 @@ local function CreateOptions()
 		end
 		if tab == "visuals" then
 			for i = 1, table.getn(general) do general[i]:Hide() end
+			nt:Hide()
 			v:Show()
 			v.Refresh()
 			f:SetHeight(200)
+		elseif tab == "types" then
+			for i = 1, table.getn(general) do general[i]:Hide() end
+			v:Hide()
+			nt:Show()
+			nt.Refresh()
+			f:SetHeight(140)
 		else
 			v:Hide()
+			nt:Hide()
 			for i = 1, table.getn(general) do general[i]:Show() end
 			GeneralRefresh()
 		end
