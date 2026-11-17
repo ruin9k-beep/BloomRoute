@@ -1,3 +1,4 @@
 *.tga binary
 *.lua text eol=lf
 *.toc text eol=lf
+.github export-ignore
