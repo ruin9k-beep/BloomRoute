@@ -1,9 +1,12 @@
-# Publishes a GitHub release with BloomRoute-forever.zip whenever a v* tag is pushed.
+# Publishes a GitHub release with BloomRoute-forever.zip (the file name wowui.io looks for)
+# whenever main gets a new "## Version:" in BloomRoute_Mainline.toc. A version that already
+# has a release is skipped, so pushes that don't change the version do nothing.
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,16 +17,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read version
+        id: version
+        run: |
+          v=$(grep -m1 '^## Version:' BloomRoute_Mainline.toc | sed 's/^## Version:[[:space:]]*//' | tr -d '\r[:space:]')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Build BloomRoute-forever.zip
+        if: steps.version.outputs.exists == 'false'
         run: |
           mkdir -p build/BloomRoute
           cp -r BloomRoute.toc BloomRoute_Mainline.toc Forever Vanilla media build/BloomRoute/
           cd build && zip -rqX ../BloomRoute-forever.zip BloomRoute
 
       - name: Publish release
+        if: steps.version.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" BloomRoute-forever.zip \
-            --title "BloomRoute ${GITHUB_REF_NAME#v}" \
+          gh release create "v$VERSION" BloomRoute-forever.zip \
+            --target "$GITHUB_SHA" \
+            --title "BloomRoute $VERSION" \
             --notes "BloomRoute-forever.zip holds the full BloomRoute folder and works in both WoW Forever and Turtle/Octo WoW (1.12)."
