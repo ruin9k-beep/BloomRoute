@@ -1,11 +1,16 @@
-# Publishes a GitHub release with BloomRoute-forever.zip (the file name wowui.io looks for)
-# whenever main gets a new "## Version:" in BloomRoute_Mainline.toc. A version that already
-# has a release is skipped, so pushes that don't change the version do nothing.
+# Publishes a GitHub release with BloomRoute-<version>-forever.zip attached.
+# WowUp picks the zip whose name ends in -forever.zip and reads the version from the
+# file name, so the version has to be in the name for it to see updates. (The same zip
+# works on the 1.12 client too.) It runs when a push to main changes a .toc file or this
+# file, or by hand from the Actions tab. It makes release v<version> from the
+# "## Version:" in BloomRoute_Mainline.toc, or, if that release already exists without
+# the versioned zip, attaches it and removes any older -forever.zip from that release.
 name: Release
 
 on:
   push:
     branches: [main]
+    paths: ["BloomRoute.toc", "BloomRoute_Mainline.toc", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -17,29 +22,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Read the version
         id: version
         run: |
-          v=$(grep -m1 '^## Version:' BloomRoute_Mainline.toc | sed 's/^## Version:[[:space:]]*//' | tr -d '\r[:space:]')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          if gh release view "v$v" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+          ver="$(sed -n 's/^## Version: *//p' BloomRoute_Mainline.toc | tr -d '\r[:space:]')"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "zip=BloomRoute-$ver-forever.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Check what's already released
+        id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "state=new" >> "$GITHUB_OUTPUT"
+          elif gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qxF "$ZIP"; then
+            echo "state=done" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=missing" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Build BloomRoute-forever.zip
-        if: steps.version.outputs.exists == 'false'
+      - name: Build the zip
+        if: steps.check.outputs.state != 'done'
         run: |
           mkdir -p build/BloomRoute
           cp -r BloomRoute.toc BloomRoute_Mainline.toc Forever Vanilla media build/BloomRoute/
-          cd build && zip -rqX ../BloomRoute-forever.zip BloomRoute
+          cd build && zip -rqX "../${{ steps.version.outputs.zip }}" BloomRoute
 
-      - name: Publish release
-        if: steps.version.outputs.exists == 'false'
+      - name: Publish the release
+        if: steps.check.outputs.state == 'new'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP: ${{ steps.version.outputs.zip }}
         run: |
-          gh release create "v$VERSION" BloomRoute-forever.zip \
-            --target "$GITHUB_SHA" \
-            --title "BloomRoute $VERSION" \
-            --notes "BloomRoute-forever.zip holds the full BloomRoute folder and works in both WoW Forever and Turtle/Octo WoW (1.12)."
+          gh release create "$TAG" "$ZIP" --target "$GITHUB_SHA" \
+            --title "BloomRoute ${TAG#v}" \
+            --notes "Download **$ZIP** and unzip it into Interface\\AddOns (WoW Forever, or the 1.12 Octo/Turtle client)."
+
+      - name: Attach the zip to the existing release
+        if: steps.check.outputs.state == 'missing'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          gh release upload "$TAG" "$ZIP"
+          for old in $(gh release view "$TAG" --json assets --jq '.assets[].name' | grep -e '-forever\.zip$' | grep -vxF "$ZIP"); do
+            gh release delete-asset "$TAG" "$old" --yes
+          done
+          gh release edit "$TAG" --notes "Download **$ZIP** and unzip it into Interface\\AddOns (WoW Forever, or the 1.12 Octo/Turtle client)."
